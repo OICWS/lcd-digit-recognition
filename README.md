@@ -58,6 +58,94 @@ retrain CRNN (~15 min)
 
 This is how the system went from ~88% to ~96% real-world accuracy without growing the dataset beyond ~300 images: each retraining round targets the model's actual failure modes rather than adding random samples.
 
+## What Didn't Work — Iteration Log
+
+This project followed Andrew Ng's ML strategy: **set up a metric, build quickly, do error analysis, iterate**. Below is every approach tried before the final solution, in order. Each failure taught something the next attempt exploited.
+
+---
+
+### Attempt 1 — HSV color segmentation + EasyOCR 
+
+**Idea:** LED digits are red. Threshold the photo in HSV space to isolate red pixels, find the largest connected component, crop it, pass to EasyOCR.
+
+**What happened:**
+
+Color segmentation worked fine on clean test images. In production it failed immediately:
+
+- Cardboard bales, rusty metal, wooden pallets, and even shadow edges all fell inside the red-hue HSV range used to detect LEDs.
+- The segmentation consistently selected the wrong region — the pallet or the background, not the display.
+- More hand-crafted rules were layered on: aspect-ratio filters, area thresholds, row-projection peaks. Each rule fixed one photo and broke three others.
+- Even when the crop was correct, EasyOCR mis-read 7-segment glyphs — confusing `1` with `7`, `0` with `D`, `5` with `S` — because it has no training signal for this font class.
+
+**Root cause:** Two problems stacked. The localization strategy had no generalization; it was tuned to specific lighting conditions in a handful of test images. And the recognition model was fundamentally the wrong tool for the glyph class.
+
+**Lesson:** Hand-crafted localization rules do not generalize. The correct response to "my rules keep breaking" is not more rules — it is a learned localization model.
+
+---
+
+### Attempt 2 — TrOCR fine-tuned on the bottom half of each photo 
+
+**Idea:** Skip localization entirely. Fine-tune Microsoft TrOCR on the bottom 50% of each photo — the LCD is usually there — and let the transformer learn to attend to the relevant region.
+
+**What happened:**
+
+Training loss decreased. Validation accuracy stayed at 0% for the first 30 epochs, then briefly spiked to ~18%, then collapsed again.
+
+The failure was diagnosed by a deliberate probe: feeding a fully black image through the fine-tuned model. It output `1012.0`. The model had learned the **marginal distribution of the training labels** — most values in the dataset are in the 1000–1100 range — and used that as a prior regardless of input. It never learned to read digits.
+
+The underlying cause: the LCD panel occupied roughly 3–5% of the bottom-half image. The transformer's attention was diffused across a large, noisy field. With only ~300 training examples there was not enough signal to pull attention to the correct region.
+
+**Lesson:** Model capacity does not substitute for input quality. The signal-to-noise ratio of the input determines the ceiling; no architecture change can fix that. Localization must happen before recognition.
+
+---
+
+### Attempt 3 — CRNN on the bottom half of each photo 
+
+**Idea:** Same crop strategy as Attempt 2, but replace TrOCR with a lightweight CRNN. Hypothesis: a smaller, simpler model might overfit less to label statistics and actually read pixels.
+
+**What happened:**
+
+Same failure mode, different model. The CRNN converged to outputting values in the `10xx.x` range for every input. The black-image probe again returned `11.5`. The model learned dataset statistics, not digit features.
+
+A second failure emerged when mixing high-resolution camera photos (LCD crops ~1000 px wide) with low-resolution phone photos (crops ~200 px wide): after the standard resize to 64 × 256, the two populations landed in very different frequency distributions. The model fit neither well.
+
+**Lesson:** Confirmed — the localization problem must be solved first. Also identified the resolution-mismatch issue that would later require `smart_resize`.
+
+---
+
+### The fix — Manual annotation + YOLOv8 fine-tuning 
+
+**Insight:** Stop trying to localize the LCD programmatically. Spend 30 minutes drawing 314 bounding boxes in labelImg. Train a model to localize.
+
+- YOLOv8n fine-tuned on 314 labeled photos → mAP50 = 0.995, Recall = 1.0
+- CRNN now receives tight, clean crops containing only digits
+- With clean input, a CRNN trained from scratch on ~300 images achieves 100% validation accuracy and ~96% on held-out real-world photos
+
+The 30-minute annotation session was the highest-leverage action in the entire project. Everything before it was trying to avoid that investment through cleverness.
+
+---
+
+### Bonus failure — ignoring resolution drift 
+
+After the YOLO + CRNN pipeline was working, a new batch of photos from an older high-resolution camera dropped real-world accuracy from ~96% to ~70%. The crops looked fine visually. The bug was invisible.
+
+Diagnosis: the old camera produced LCD crops 1000–1400 px wide. After the 64 × 256 resize, the digit strokes were compressed to a different pixel-level pattern than the ~300 px crops the model was trained on — same semantic content, different low-level statistics.
+
+Fix: `smart_resize` — pre-downscale any crop wider than 400 px to ≤300 px before the standard transform.
+
+```python
+def smart_resize(img):
+    w, h = img.size
+    if w > 400:
+        scale = 300 / w
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    return img
+```
+
+One function, seven lines, +8 percentage points on real-world accuracy.
+
+---
+
 ## Repository layout
 
 ```
