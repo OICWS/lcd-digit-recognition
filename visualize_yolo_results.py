@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 from pathlib import Path
 
-from ocr_reader import read_lcd_number, get_yolo
+from ocr_reader import recognize_crop, get_yolo
 
 
 def read_image(path):
@@ -119,7 +119,7 @@ def main():
             y2 = min(h, y2 + pad)
             box = (x1, y1, x2, y2)
 
-            lcd_val, _ = read_lcd_number(str(jpg_path))
+            lcd_val, _ = recognize_crop(img[y1:y2, x1:x2])
             if lcd_val is not None:
                 success += 1
             vis = draw_result(img, box, lcd_val, conf)
