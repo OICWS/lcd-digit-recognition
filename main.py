@@ -53,12 +53,12 @@ def main():
     failed = 0
     for img in images:
         print(f"\n>>> {img}")
-        value = read_lcd_number(str(img))
+        value, conf = read_lcd_number(str(img))
         if value is None:
-            print(f"    Result: FAILED")
+            print(f"    Result: FAILED (conf={conf:.3f})")
             failed += 1
         else:
-            print(f"    Result: {value}")
+            print(f"    Result: {value} (conf={conf:.3f})")
             success += 1
 
     print("\n" + "=" * 60)
