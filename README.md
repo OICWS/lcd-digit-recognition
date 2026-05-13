@@ -27,10 +27,15 @@ Generic OCR models trained on natural-scene text or scanned documents fall apart
 |   1   | YOLOv8n | 314 labeled photos    | mAP50 = 0.995, Recall = 1.0  |
 |   2   | CRNN    | 314 cropped LCDs      | Val 100%, Real-world ~96%    |
 
+**On the ~4% real-world errors:** almost all failures are edge cases — extreme values rarely seen during training (e.g. sub-10 kg readings), severe backlighting, or unusual shooting angles. Critically, these failures are *predictable and detectable*: the misread value typically differs from the correct one by an order of magnitude, making them easy to catch during business review. Collecting these edge-case photos and adding them to the training set resolves each failure class permanently. This is precisely what the error-driven retraining loop is designed for.
+
 ## Engineering highlights
 
 ### Two-stage decomposition over end-to-end
 The full task (photo → digits) is decomposed into **detect-then-read** because the two sub-tasks have very different data requirements. Detection needs spatial context and benefits enormously from ImageNet/COCO pretraining (so a fine-tuned YOLOv8n hits 0.995 mAP with 314 images). Recognition needs only clean, normalized crops and is data-cheap to train from scratch. End-to-end models would force both sub-tasks to share a backbone and would need 10× more data to converge.
+
+### Minimal inference requirements
+The full pipeline runs on CPU with no GPU and no network connection. On an Intel i5-10310U (a mid-range 2019 laptop processor), the system processes approximately **3 photos per second** end-to-end — fast enough for batch processing a month's worth of scale photos in under a minute. Total model footprint is ~22 MB (YOLOv8n 6 MB + CRNN 16 MB). Any machine capable of running Python can deploy this system.
 
 ### `smart_resize`: handling resolution drift
 A subtle but high-impact issue: modern phone cameras produce LCD crops 1000+ pixels wide, while older training data has crops around 200–400 pixels. After the standard 64 × 256 resize, high-res crops compress digits into a different frequency distribution than the training set, causing silent accuracy degradation on new photos. `smart_resize` pre-downscales any crop wider than 400 px to ≤300 px **before** the standard transform, restoring distributional consistency. This single change moved real-world accuracy from ~88% to ~96%.
@@ -58,13 +63,23 @@ retrain CRNN (~15 min)
 
 This is how the system went from ~88% to ~96% real-world accuracy without growing the dataset beyond ~300 images: each retraining round targets the model's actual failure modes rather than adding random samples.
 
+A fully automated version of this pipeline (error collection → auto-labeling → scheduled retraining) exists in the production deployment but is not included in this repository. The manual workflow documented here mirrors the same logic.
+
+### Portability across LCD devices
+The pipeline is not specific to the weighing scale used during development. Adapting it to any seven-segment display requires only:
+
+1. **Re-label bounding boxes** (~30 minutes with labelImg) — the LCD panel appearance varies by device, but the annotation task is identical.
+2. **Retrain CRNN** (~15 minutes on a free Kaggle T4) — the character set (0–9 + decimal point) is universal across all numeric displays.
+
+The YOLOv8 detector typically does **not** need retraining: LCD panels share enough visual similarity that the existing detector generalizes well to new devices. Only if detection fails on a new device is retraining necessary.
+
 ## What Didn't Work — Iteration Log
 
 This project followed Andrew Ng's ML strategy: **set up a metric, build quickly, do error analysis, iterate**. Below is every approach tried before the final solution, in order. Each failure taught something the next attempt exploited.
 
 ---
 
-### Attempt 1 — HSV color segmentation + EasyOCR 
+### Attempt 1 — HSV color segmentation + EasyOCR ❌
 
 **Idea:** LED digits are red. Threshold the photo in HSV space to isolate red pixels, find the largest connected component, crop it, pass to EasyOCR.
 
@@ -83,7 +98,7 @@ Color segmentation worked fine on clean test images. In production it failed imm
 
 ---
 
-### Attempt 2 — TrOCR fine-tuned on the bottom half of each photo 
+### Attempt 2 — TrOCR fine-tuned on the bottom half of each photo ❌
 
 **Idea:** Skip localization entirely. Fine-tune Microsoft TrOCR on the bottom 50% of each photo — the LCD is usually there — and let the transformer learn to attend to the relevant region.
 
@@ -99,7 +114,7 @@ The underlying cause: the LCD panel occupied roughly 3–5% of the bottom-half i
 
 ---
 
-### Attempt 3 — CRNN on the bottom half of each photo 
+### Attempt 3 — CRNN on the bottom half of each photo ❌
 
 **Idea:** Same crop strategy as Attempt 2, but replace TrOCR with a lightweight CRNN. Hypothesis: a smaller, simpler model might overfit less to label statistics and actually read pixels.
 
@@ -113,7 +128,7 @@ A second failure emerged when mixing high-resolution camera photos (LCD crops ~1
 
 ---
 
-### The fix — Manual annotation + YOLOv8 fine-tuning 
+### The fix — Manual annotation + YOLOv8 fine-tuning ✅
 
 **Insight:** Stop trying to localize the LCD programmatically. Spend 30 minutes drawing 314 bounding boxes in labelImg. Train a model to localize.
 
@@ -125,7 +140,7 @@ The 30-minute annotation session was the highest-leverage action in the entire p
 
 ---
 
-### Bonus failure — ignoring resolution drift 
+### Bonus failure — ignoring resolution drift ⚠️
 
 After the YOLO + CRNN pipeline was working, a new batch of photos from an older high-resolution camera dropped real-world accuracy from ~96% to ~70%. The crops looked fine visually. The bug was invisible.
 
