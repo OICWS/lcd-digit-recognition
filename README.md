@@ -1,6 +1,10 @@
 # LCD Number Recognition
 
-A production-grade OCR pipeline for **seven-segment LCD displays**, built with **YOLOv8 + CRNN**. Trained from scratch on ~300 labeled images, the system reaches **100% validation accuracy** and **~96% real-world accuracy** on photos taken under varying lighting, angle, and distance.
+A **seed project / methodology reference** for OCR on **seven-segment LCD displays**, built with **YOLOv8 + CRNN**. Trained from scratch on ~300 labeled images, the system reaches **100% validation accuracy** and **~96% real-world accuracy** on photos taken under varying lighting, angle, and distance.
+
+> **What this repo is — and isn't.** This is a methodology reference, not a drop-in production tool. The ~300-image dataset is demo-scale: enough to validate the pipeline end-to-end and to deliver useful accuracy on a single device class, but not enough to claim general-purpose robustness. Real-world accuracy scales with the size and diversity of *your* dataset; the numbers below are a starting point for one device, not an upper bound. Treat the included weights as a baseline to bootstrap from, and the documented training loop as the actual deliverable.
+>
+> **About the data.** The training photos are production data from an internal industrial deployment and cannot be released for privacy reasons — a common constraint for OCR projects targeting real-world equipment. The code, training pipeline, and pretrained weights are open; users adapting this to their own LCDs will need to collect and label their own ~300 photos following the workflow below.
 
 This repository is a complete, reproducible reference for a domain-specific OCR problem where generic OCR tools (EasyOCR, PaddleOCR, Tesseract) fail.
 
@@ -28,6 +32,21 @@ Generic OCR models trained on natural-scene text or scanned documents fall apart
 |   2   | CRNN    | 314 cropped LCDs      | Val 100%, Real-world ~96%    |
 
 **On the ~4% real-world errors:** almost all failures are edge cases — extreme values rarely seen during training (e.g. sub-10 kg readings), severe backlighting, or unusual shooting angles. Critically, these failures are *predictable and detectable*: the misread value typically differs from the correct one by an order of magnitude, making them easy to catch during business review. Collecting these edge-case photos and adding them to the training set resolves each failure class permanently. This is precisely what the error-driven retraining loop is designed for.
+
+**Real-world test set details (caveats up front).** The ~96% figure was measured on roughly **500 in-the-wild photos** of the same scale model, captured across **multiple operators, time periods (different days/lighting), and phone cameras**, all from the same factory deployment. Approximate error breakdown across observed failures:
+
+| Failure mode                                  | Share of errors |
+|-----------------------------------------------|----------------:|
+| Digit confusion (e.g. `8`↔`0`, `1`↔`7`)       | ~50%            |
+| Decimal-point dropped or hallucinated         | ~25%            |
+| Whole-value misread (wrong magnitude / order) | ~15%            |
+| YOLO localisation miss (no detection)         | ~10%            |
+
+A few honest caveats:
+
+- **Single-device evaluation.** All test photos come from one scale model. Cross-device numbers will be lower until you collect device-specific data.
+- **No public benchmark.** The dataset is private production data and cannot be released, so these numbers are not externally verifiable. Reproduce them on your own LCD by following the training workflow below.
+- **100% val on 300 images is a warning sign, not a flex.** With this dataset size, the validation split is small and overlaps the device/lighting distribution of the training split — read it as "the model has clearly learned the task on this distribution," not as "the model is perfect." Real-world accuracy on held-out photos is the number that matters.
 
 ## Engineering highlights
 
@@ -71,7 +90,7 @@ The pipeline is not specific to the weighing scale used during development. Adap
 1. **Re-label bounding boxes** (~30 minutes with labelImg) — the LCD panel appearance varies by device, but the annotation task is identical.
 2. **Retrain CRNN** (~15 minutes on a free Kaggle T4) — the character set (0–9 + decimal point) is universal across all numeric displays.
 
-The YOLOv8 detector typically does **not** need retraining: LCD panels share enough visual similarity that the existing detector generalizes well to new devices. Only if detection fails on a new device is retraining necessary.
+The YOLOv8 detector *may* not need retraining across devices — this is a **conjecture based on the visual similarity of seven-segment LCD panels**, not a claim validated by cross-device experiments. The detector in this repository was trained on a single device class, and no formal generalisation study has been run. Treat re-using the existing detector as a worth-trying default; budget for re-labelling (~30 minutes) if detection fails on your hardware.
 
 ## What Didn't Work — Iteration Log
 
@@ -229,11 +248,21 @@ python main.py img1.jpg img2.jpg img3.jpg
 
 Or use the pipeline programmatically:
 ```python
-from ocr_reader import read_lcd_number
+from ocr_reader import read_lcd_number, read_lcd_batch
 
-value = read_lcd_number("path/to/photo.jpg")
-print(value)  # e.g. 1027.5
+# Single image — returns (value, confidence). value is None on failure.
+value, conf = read_lcd_number("path/to/photo.jpg")
+print(value, conf)  # e.g. 1027.5 0.987
+
+# Override the value-range sanity check (defaults come from crnn_config.json)
+value, conf = read_lcd_number("path/to/photo.jpg", min_val=0.0, max_val=99999.9)
+
+# Batched inference (YOLO + CRNN both run in batches) — list of (value, conf).
+results = read_lcd_batch(["a.jpg", "b.jpg", "c.jpg"])
 ```
+
+`confidence` is the minimum per-character softmax probability from the CRNN
+decode — low values flag samples worth routing to human review.
 
 Visualize predictions over a folder:
 ```bash
