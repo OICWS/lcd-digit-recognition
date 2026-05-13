@@ -14,11 +14,17 @@ import torchvision.transforms as T
 
 MODEL_DIR = Path(__file__).parent / "models"
 
-with open(MODEL_DIR / "crnn_config.json") as f:
-    _config = json.load(f)
-CHARS     = _config['chars']
-BLANK     = _config['blank']
-NUM_CLASS = _config['num_class']
+_config = None
+
+
+def get_config():
+    global _config
+    if _config is None:
+        with open(MODEL_DIR / "crnn_config.json") as f:
+            _config = json.load(f)
+        _config.setdefault("min_val", 0.1)
+        _config.setdefault("max_val", 9999.9)
+    return _config
 
 
 class CRNN(nn.Module):
@@ -54,7 +60,8 @@ def get_crnn():
     global _crnn
     if _crnn is None:
         print("  [CRNN] Loading model...")
-        _crnn = CRNN(NUM_CLASS)
+        cfg = get_config()
+        _crnn = CRNN(cfg["num_class"])
         _crnn.load_state_dict(torch.load(
             str(MODEL_DIR / "final_crnn.pth"), map_location='cpu'))
         _crnn.eval()
@@ -77,13 +84,23 @@ TRANSFORM = T.Compose([
 ])
 
 
-def decode(indices):
-    result, prev = [], None
-    for i in indices:
-        if i != BLANK and i != prev:
-            result.append(CHARS[i])
+def decode_with_confidence(log_probs_t):
+    # log_probs_t: (T, num_class) for a single sample
+    cfg = get_config()
+    chars = cfg["chars"]
+    blank = cfg["blank"]
+    probs = log_probs_t.exp()
+    ids = log_probs_t.argmax(-1).tolist()
+    max_p = probs.max(-1).values.tolist()
+    out_chars, char_confs, prev = [], [], None
+    for i, p in zip(ids, max_p):
+        if i != blank and i != prev:
+            out_chars.append(chars[i])
+            char_confs.append(p)
         prev = i
-    return ''.join(result)
+    pred = ''.join(out_chars)
+    conf = float(min(char_confs)) if char_confs else 0.0
+    return pred, conf
 
 
 def read_image(path):
@@ -104,37 +121,64 @@ def smart_resize(img):
     return img
 
 
-def read_lcd_number(image_path):
+def _crop_lcd(img_cv, box_xyxy, pad=5):
+    h, w = img_cv.shape[:2]
+    x1, y1, x2, y2 = box_xyxy.astype(int)
+    x1 = max(0, x1 - pad)
+    y1 = max(0, y1 - pad)
+    x2 = min(w, x2 + pad)
+    y2 = min(h, y2 + pad)
+    return img_cv[y1:y2, x1:x2], (x2 - x1, y2 - y1)
+
+
+def _validate(pred_str, min_val, max_val):
+    if not re.match(r'^\d+\.?\d*$', pred_str):
+        print(f"  [WARN] Invalid format: '{pred_str}'")
+        return None
+    try:
+        val = float(pred_str)
+    except ValueError:
+        return None
+    if not (min_val <= val <= max_val):
+        print(f"  [WARN] Value out of range [{min_val}, {max_val}]: {val}")
+        return None
+    return val
+
+
+def read_lcd_number(image_path, min_val=None, max_val=None):
+    """Read a single LCD image. Returns (value, confidence) or (None, 0.0).
+
+    confidence is the min per-character softmax probability from the CRNN.
+    min_val / max_val override the range from crnn_config.json.
+    """
+    cfg = get_config()
+    if min_val is None:
+        min_val = cfg["min_val"]
+    if max_val is None:
+        max_val = cfg["max_val"]
+
     img_cv = read_image(image_path)
     if img_cv is None:
-        return None
-
-    h, w = img_cv.shape[:2]
+        return None, 0.0
 
     yolo    = get_yolo()
     results = yolo(image_path, verbose=False, conf=0.3)
 
     if not results or len(results[0].boxes) == 0:
         print("  [YOLO] No LCD detected")
-        return None
+        return None, 0.0
 
     boxes    = results[0].boxes
     best_idx = boxes.conf.argmax().item()
-    x1, y1, x2, y2 = boxes.xyxy[best_idx].cpu().numpy().astype(int)
+    box      = boxes.xyxy[best_idx].cpu().numpy()
+    yolo_conf = boxes.conf[best_idx].item()
 
-    pad = 5
-    x1 = max(0, x1 - pad)
-    y1 = max(0, y1 - pad)
-    x2 = min(w, x2 + pad)
-    y2 = min(h, y2 + pad)
-
-    crop = img_cv[y1:y2, x1:x2]
-    conf = boxes.conf[best_idx].item()
-    print(f"  [YOLO] confidence:{conf:.2f}, region:{x2-x1}x{y2-y1}px")
+    crop, (cw, ch) = _crop_lcd(img_cv, box)
+    print(f"  [YOLO] confidence:{yolo_conf:.2f}, region:{cw}x{ch}px")
 
     if crop.size == 0:
         print("  [ERROR] Empty crop region")
-        return None
+        return None, 0.0
 
     crop_pil = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
     crop_pil = smart_resize(crop_pil)
@@ -142,20 +186,71 @@ def read_lcd_number(image_path):
 
     crnn = get_crnn()
     with torch.no_grad():
-        pred_ids = crnn(tensor).log_softmax(2).argmax(2).squeeze(1)
+        log_probs = crnn(tensor).log_softmax(2)  # (T, B=1, C)
 
-    pred_str = decode(pred_ids.tolist())
-    print(f"  [CRNN] recognized: '{pred_str}'")
+    pred_str, crnn_conf = decode_with_confidence(log_probs[:, 0, :])
+    print(f"  [CRNN] recognized: '{pred_str}' (conf={crnn_conf:.3f})")
 
-    if not re.match(r'^\d+\.?\d*$', pred_str):
-        print(f"  [WARN] Invalid format: '{pred_str}'")
-        return None
+    val = _validate(pred_str, min_val, max_val)
+    if val is None:
+        return None, crnn_conf
+    return val, crnn_conf
 
-    try:
-        val = float(pred_str)
-        if not (0.1 <= val <= 9999.9):
-            print(f"  [WARN] Value out of range: {val}")
-            return None
-        return val
-    except ValueError:
-        return None
+
+def read_lcd_batch(image_paths, min_val=None, max_val=None, batch_size=16):
+    """Batched inference over a list of image paths.
+
+    Returns a list of (value, confidence) tuples, one per input path (None for
+    images where detection or recognition failed). YOLO and CRNN are each run
+    in batches of up to ``batch_size``.
+    """
+    cfg = get_config()
+    if min_val is None:
+        min_val = cfg["min_val"]
+    if max_val is None:
+        max_val = cfg["max_val"]
+
+    paths = [str(p) for p in image_paths]
+    results_out = [(None, 0.0)] * len(paths)
+
+    yolo = get_yolo()
+    crnn = get_crnn()
+
+    crop_tensors = []
+    crop_indices = []
+
+    for start in range(0, len(paths), batch_size):
+        chunk = paths[start:start + batch_size]
+        det = yolo(chunk, verbose=False, conf=0.3)
+        for j, res in enumerate(det):
+            idx = start + j
+            if res is None or len(res.boxes) == 0:
+                continue
+            img_cv = read_image(paths[idx])
+            if img_cv is None:
+                continue
+            boxes = res.boxes
+            best  = boxes.conf.argmax().item()
+            box   = boxes.xyxy[best].cpu().numpy()
+            crop, _ = _crop_lcd(img_cv, box)
+            if crop.size == 0:
+                continue
+            crop_pil = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+            crop_pil = smart_resize(crop_pil)
+            crop_tensors.append(TRANSFORM(crop_pil))
+            crop_indices.append(idx)
+
+    if not crop_tensors:
+        return results_out
+
+    for start in range(0, len(crop_tensors), batch_size):
+        batch = torch.stack(crop_tensors[start:start + batch_size])
+        with torch.no_grad():
+            log_probs = crnn(batch).log_softmax(2)  # (T, B, C)
+        for k in range(log_probs.shape[1]):
+            idx = crop_indices[start + k]
+            pred_str, conf = decode_with_confidence(log_probs[:, k, :])
+            val = _validate(pred_str, min_val, max_val)
+            results_out[idx] = (val, conf)
+
+    return results_out
