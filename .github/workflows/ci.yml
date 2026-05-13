@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff
+
+      - name: Import smoke test
+        # Model weights/config are not in the repo; config is loaded lazily so
+        # importing the entry points must succeed without them.
+        run: python -c "from ocr_reader import read_lcd_number, read_lcd_batch"
+
+      - name: Lint
+        run: ruff check .
