@@ -145,11 +145,13 @@ def _validate(pred_str, min_val, max_val):
     return val
 
 
-def read_lcd_number(image_path, min_val=None, max_val=None):
-    """Read a single LCD image. Returns (value, confidence) or (None, 0.0).
+def recognize_crop(crop_bgr, min_val=None, max_val=None):
+    """Recognize digits from a pre-cropped LCD region (BGR ndarray).
 
-    confidence is the min per-character softmax probability from the CRNN.
-    min_val / max_val override the range from crnn_config.json.
+    Skips YOLO entirely — use this when the caller has already located the
+    LCD (e.g. visualization or evaluation scripts that batch YOLO separately).
+    Returns (value, confidence). value is None if the CRNN output fails the
+    format / range checks.
     """
     cfg = get_config()
     if min_val is None:
@@ -157,6 +159,28 @@ def read_lcd_number(image_path, min_val=None, max_val=None):
     if max_val is None:
         max_val = cfg["max_val"]
 
+    if crop_bgr is None or crop_bgr.size == 0:
+        return None, 0.0
+
+    crop_pil = Image.fromarray(cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB))
+    crop_pil = smart_resize(crop_pil)
+    tensor   = TRANSFORM(crop_pil).unsqueeze(0)
+
+    crnn = get_crnn()
+    with torch.no_grad():
+        log_probs = crnn(tensor).log_softmax(2)
+
+    pred_str, crnn_conf = decode_with_confidence(log_probs[:, 0, :])
+    val = _validate(pred_str, min_val, max_val)
+    return val, crnn_conf
+
+
+def read_lcd_number(image_path, min_val=None, max_val=None):
+    """Read a single LCD image. Returns (value, confidence) or (None, 0.0).
+
+    confidence is the min per-character softmax probability from the CRNN.
+    min_val / max_val override the range from crnn_config.json.
+    """
     img_cv = read_image(image_path)
     if img_cv is None:
         return None, 0.0
@@ -176,24 +200,8 @@ def read_lcd_number(image_path, min_val=None, max_val=None):
     crop, (cw, ch) = _crop_lcd(img_cv, box)
     print(f"  [YOLO] confidence:{yolo_conf:.2f}, region:{cw}x{ch}px")
 
-    if crop.size == 0:
-        print("  [ERROR] Empty crop region")
-        return None, 0.0
-
-    crop_pil = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
-    crop_pil = smart_resize(crop_pil)
-    tensor   = TRANSFORM(crop_pil).unsqueeze(0)
-
-    crnn = get_crnn()
-    with torch.no_grad():
-        log_probs = crnn(tensor).log_softmax(2)  # (T, B=1, C)
-
-    pred_str, crnn_conf = decode_with_confidence(log_probs[:, 0, :])
-    print(f"  [CRNN] recognized: '{pred_str}' (conf={crnn_conf:.3f})")
-
-    val = _validate(pred_str, min_val, max_val)
-    if val is None:
-        return None, crnn_conf
+    val, crnn_conf = recognize_crop(crop, min_val=min_val, max_val=max_val)
+    print(f"  [CRNN] conf={crnn_conf:.3f}, value={val}")
     return val, crnn_conf
 
 
