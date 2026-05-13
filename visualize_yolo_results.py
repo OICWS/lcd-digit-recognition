@@ -38,8 +38,10 @@ def draw_result(img, box, lcd_val, conf):
         h, w = img.shape[:2]
         if box:
             x1, y1, x2, y2 = box
-            x1 = int(x1 * scale); y1 = int(y1 * scale)
-            x2 = int(x2 * scale); y2 = int(y2 * scale)
+            x1 = int(x1 * scale)
+            y1 = int(y1 * scale)
+            x2 = int(x2 * scale)
+            y2 = int(y2 * scale)
             box = (x1, y1, x2, y2)
 
     result = img.copy()
@@ -111,11 +113,13 @@ def main():
             x1, y1, x2, y2 = boxes.xyxy[best_idx].cpu().numpy().astype(int)
             conf = boxes.conf[best_idx].item()
             pad  = 5
-            x1 = max(0, x1-pad); y1 = max(0, y1-pad)
-            x2 = min(w, x2+pad); y2 = min(h, y2+pad)
+            x1 = max(0, x1 - pad)
+            y1 = max(0, y1 - pad)
+            x2 = min(w, x2 + pad)
+            y2 = min(h, y2 + pad)
             box = (x1, y1, x2, y2)
 
-            lcd_val = read_lcd_number(str(jpg_path))
+            lcd_val, _ = read_lcd_number(str(jpg_path))
             if lcd_val is not None:
                 success += 1
             vis = draw_result(img, box, lcd_val, conf)
