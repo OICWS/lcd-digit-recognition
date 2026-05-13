@@ -14,7 +14,6 @@ import json
 import random
 from pathlib import Path
 
-import numpy as np
 from PIL import Image
 
 import torch
@@ -240,7 +239,13 @@ def main():
     torch.save(model.state_dict(), str(output_dir / "final_crnn.pth"))
 
     with open(str(output_dir / "crnn_config.json"), "w") as f:
-        json.dump({"num_class": NUM_CLASS, "chars": CHARS, "blank": BLANK}, f)
+        json.dump({
+            "num_class": NUM_CLASS,
+            "chars": CHARS,
+            "blank": BLANK,
+            "min_val": 0.1,
+            "max_val": 9999.9,
+        }, f)
 
     print("Saved: final_crnn.pth + crnn_config.json")
 
