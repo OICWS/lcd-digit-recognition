@@ -221,6 +221,19 @@ Input: (B, 3, 64, 256)
 Output: digit string (charset 0123456789. + CTC blank = 12 classes)
 ```
 
+## Architecture choices
+ 
+Several alternatives were considered and rejected before settling on CRNN + CTC.
+ 
+**Why not ResNet / ViT for recognition?**
+ResNet and ViT are image *classification* models — they map an entire image to a single label. Recognizing a sequence of digits requires outputting a variable number of characters in order. Adapting a classifier to this task would require either fixing the number of output characters (which breaks when digit count varies) or sliding a window across the crop to classify one character at a time (which requires knowing where each character starts and ends — the segmentation problem CTC was designed to avoid). CRNN with CTC sidesteps both issues: the CNN extracts per-column features, the LSTM models their sequential context, and CTC marginalizes over all valid alignments without explicit segmentation.
+ 
+**Why not an attention-based sequence model (e.g. TrOCR)?**
+Attention decoders are powerful but data-hungry. With ~300 training samples, an attention decoder cannot learn a reliable alignment between input features and output tokens — it collapses to predicting the most frequent label (see Attempt 2 in the iteration log). CTC is a better fit for small datasets because it imposes a monotonic alignment constraint that dramatically reduces the hypothesis space.
+ 
+**Why not hyperparameter search (e.g. Optuna)?**
+With only ~300 samples and a 90/10 train-val split, the validation set contains ~30 images. Any metric computed on 30 samples has high variance — optimizing it with a search algorithm would tune to noise, not signal. Hyperparameters (learning rate, dropout, hidden size) were set manually based on standard CRNN practice and left unchanged once the model converged cleanly.
+
 ## Quick start
 
 ```bash
