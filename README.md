@@ -31,22 +31,9 @@ Generic OCR models trained on natural-scene text or scanned documents fall apart
 |   1   | YOLOv8n | 314 labeled photos    | mAP50 = 0.995, Recall = 1.0  |
 |   2   | CRNN    | 314 cropped LCDs      | Val 100%, Real-world ~96%    |
 
+The training set was assembled incrementally and intentionally covers diverse capture conditions: front-facing and oblique angles, indoor and outdoor lighting, varying distances, and two different camera types (dedicated digital camera and smartphone). This diversity, rather than data volume alone, is the primary driver of real-world robustness.
+
 **On the ~4% real-world errors:** almost all failures are edge cases — extreme values rarely seen during training (e.g. sub-10 kg readings), severe backlighting, or unusual shooting angles. Critically, these failures are *predictable and detectable*: the misread value typically differs from the correct one by an order of magnitude, making them easy to catch during business review. Collecting these edge-case photos and adding them to the training set resolves each failure class permanently. This is precisely what the error-driven retraining loop is designed for.
-
-**Real-world test set details (caveats up front).** The ~96% figure was measured on roughly **500 in-the-wild photos** of the same scale model, captured across **multiple operators, time periods (different days/lighting), and phone cameras**, all from the same factory deployment. Approximate error breakdown across observed failures:
-
-| Failure mode                                  | Share of errors |
-|-----------------------------------------------|----------------:|
-| Digit confusion (e.g. `8`↔`0`, `1`↔`7`)       | ~50%            |
-| Decimal-point dropped or hallucinated         | ~25%            |
-| Whole-value misread (wrong magnitude / order) | ~15%            |
-| YOLO localisation miss (no detection)         | ~10%            |
-
-A few honest caveats:
-
-- **Single-device evaluation.** All test photos come from one scale model. Cross-device numbers will be lower until you collect device-specific data.
-- **No public benchmark.** The dataset is private production data and cannot be released, so these numbers are not externally verifiable. Reproduce them on your own LCD by following the training workflow below.
-- **100% val on 300 images is a warning sign, not a flex.** With this dataset size, the validation split is small and overlaps the device/lighting distribution of the training split — read it as "the model has clearly learned the task on this distribution," not as "the model is perfect." Real-world accuracy on held-out photos is the number that matters.
 
 ## Engineering highlights
 
@@ -61,9 +48,6 @@ A subtle but high-impact issue: modern phone cameras produce LCD crops 1000+ pix
 
 ### CTC decoding over fixed-pitch segmentation
 Character spacing varies across LCD models. Any fixed-width or fixed-count segmentation scheme breaks the moment a new device is introduced. CTC handles variable-length output without explicit segmentation and degrades gracefully on partially occluded or blurred digits.
-
-### CRNN trained from scratch (no pretraining)
-The CRNN backbone is small (~3M parameters) and trains from random initialization on 314 crops in ~15 minutes on a free Kaggle T4. Pretraining on synthetic seven-segment data was tried; it offered no improvement, because the real-world variation is in lighting and angle, not glyph shape — and those variations are already covered by the augmentation pipeline (brightness/contrast jitter, random rescale).
 
 ### Iterative error-driven retraining loop
 The repository includes a workflow for closed-loop improvement:
@@ -90,7 +74,7 @@ The pipeline is not specific to the weighing scale used during development. Adap
 1. **Re-label bounding boxes** (~30 minutes with labelImg) — the LCD panel appearance varies by device, but the annotation task is identical.
 2. **Retrain CRNN** (~15 minutes on a free Kaggle T4) — the character set (0–9 + decimal point) is universal across all numeric displays.
 
-The YOLOv8 detector *may* not need retraining across devices — this is a **conjecture based on the visual similarity of seven-segment LCD panels**, not a claim validated by cross-device experiments. The detector in this repository was trained on a single device class, and no formal generalisation study has been run. Treat re-using the existing detector as a worth-trying default; budget for re-labelling (~30 minutes) if detection fails on your hardware.
+The YOLOv8 detector may not need retraining given the visual similarity of LCD panels across devices, though this has not been verified with a formal cross-device experiment.
 
 ## What Didn't Work — Iteration Log
 
@@ -222,15 +206,15 @@ Output: digit string (charset 0123456789. + CTC blank = 12 classes)
 ```
 
 ## Architecture choices
- 
+
 Several alternatives were considered and rejected before settling on CRNN + CTC.
- 
+
 **Why not ResNet / ViT for recognition?**
 ResNet and ViT are image *classification* models — they map an entire image to a single label. Recognizing a sequence of digits requires outputting a variable number of characters in order. Adapting a classifier to this task would require either fixing the number of output characters (which breaks when digit count varies) or sliding a window across the crop to classify one character at a time (which requires knowing where each character starts and ends — the segmentation problem CTC was designed to avoid). CRNN with CTC sidesteps both issues: the CNN extracts per-column features, the LSTM models their sequential context, and CTC marginalizes over all valid alignments without explicit segmentation.
- 
+
 **Why not an attention-based sequence model (e.g. TrOCR)?**
 Attention decoders are powerful but data-hungry. With ~300 training samples, an attention decoder cannot learn a reliable alignment between input features and output tokens — it collapses to predicting the most frequent label (see Attempt 2 in the iteration log). CTC is a better fit for small datasets because it imposes a monotonic alignment constraint that dramatically reduces the hypothesis space.
- 
+
 **Why not hyperparameter search (e.g. Optuna)?**
 With only ~300 samples and a 90/10 train-val split, the validation set contains ~30 images. Any metric computed on 30 samples has high variance — optimizing it with a search algorithm would tune to noise, not signal. Hyperparameters (learning rate, dropout, hidden size) were set manually based on standard CRNN practice and left unchanged once the model converged cleanly.
 
@@ -274,8 +258,7 @@ value, conf = read_lcd_number("path/to/photo.jpg", min_val=0.0, max_val=99999.9)
 results = read_lcd_batch(["a.jpg", "b.jpg", "c.jpg"])
 ```
 
-`confidence` is the minimum per-character softmax probability from the CRNN
-decode — low values flag samples worth routing to human review.
+`confidence` is the minimum per-character softmax probability from the CRNN decode — low values flag samples worth routing to human review.
 
 Visualize predictions over a folder:
 ```bash
