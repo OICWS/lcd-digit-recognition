@@ -3,6 +3,7 @@ Train the CRNN digit recognizer.
 
 Usage:
     python train_crnn.py --data <data_dir> --output <output_dir>
+    python train_crnn.py --data <data_dir> --output <output_dir> --val-files "a.jpg,b.jpg,c.jpg"
 
 The data directory must contain:
     - cropped LCD .jpg images
@@ -126,6 +127,11 @@ def main():
     parser.add_argument("--batch",      type=int, default=32)
     parser.add_argument("--lr",         type=float, default=3e-4)
     parser.add_argument("--seed",       type=int, default=42)
+    parser.add_argument("--val-files",  type=str, default="",
+                         help="Comma-separated filenames to use as a manually-pinned "
+                              "validation set (should represent real deployment "
+                              "conditions: lighting, angle, distance). "
+                              "Leave empty for a random 90/10 split.")
     args = parser.parse_args()
 
     data_dir   = Path(args.data)
@@ -146,12 +152,21 @@ def main():
     rows = [r for r in rows if (data_dir / r["filename"]).exists()]
     print(f"Valid samples: {len(rows)}")
 
-    random.seed(args.seed)
-    random.shuffle(rows)
-    split      = int(len(rows) * 0.9)
-    train_rows = rows[:split]
-    val_rows   = rows[split:]
-    print(f"Train: {len(train_rows)}  Val: {len(val_rows)}")
+    if args.val_files:
+        val_set    = {f.strip() for f in args.val_files.split(",") if f.strip()}
+        val_rows   = [r for r in rows if r["filename"] in val_set]
+        train_rows = [r for r in rows if r["filename"] not in val_set]
+        missing = val_set - {r["filename"] for r in val_rows}
+        if missing:
+            print(f"Warning: --val-files entries not found in dataset: {missing}")
+    else:
+        random.seed(args.seed)
+        random.shuffle(rows)
+        split      = int(len(rows) * 0.9)
+        train_rows = rows[:split]
+        val_rows   = rows[split:]
+    print(f"Train: {len(train_rows)}  Val: {len(val_rows)}  "
+          f"({'manual' if args.val_files else 'random 10%'})")
 
     print("Pre-loading images...")
     image_cache = {}
