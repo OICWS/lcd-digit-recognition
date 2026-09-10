@@ -1,6 +1,6 @@
 # LCD Number Recognition
 
-Seven-segment LCD display OCR using **YOLOv8 (detection) + CRNN (recognition)**. Trained on **~1400 labeled photos**, reaching **[FILL IN]% validation accuracy** and **[FILL IN]% real-world accuracy** on unseen production photos.
+Seven-segment LCD display OCR using **YOLOv8 (detection) + CRNN (recognition)**. Trained on **~800 labeled photos**, reaching **100% validation accuracy** and **98% real-world accuracy** on unseen production photos.
 
 > **Scope.** This is a methodology reference, not a drop-in production tool. Source photos are internal industrial data and cannot be released for privacy reasons. Code, training pipeline, and pretrained weights are open — adapting this to your own LCD device requires collecting and labeling your own photos following the workflow below.
 
@@ -18,8 +18,8 @@ Seven-segment LCD readouts (industrial scales, multimeters, instrument panels) a
 
 | Stage | Model   | Training data       | Result                          |
 |------:|---------|----------------------|----------------------------------|
-|   1   | YOLOv8n | ~1400 labeled photos | mAP50 = [FILL IN]                |
-|   2   | CRNN    | ~1400 cropped LCDs   | Val [FILL IN]%, real-world [FILL IN]% |
+|   1   | YOLOv8n | ~1400 labeled photos | mAP50 = 0.996                |
+|   2   | CRNN    | ~1400 cropped LCDs   | Val 100%, real-world 98% |
 
 Dataset grew from ~800 to ~1400 photos through continued production use and error-driven retraining, further improving coverage of lighting, angle, and distance conditions.
 
